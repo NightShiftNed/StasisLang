@@ -3358,6 +3358,34 @@ static float stasis_android_prev_x = 0.0f;
 static float stasis_android_prev_y = 0.0f;
 static int32_t stasis_android_pointer_down = 0;
 
+#define STASIS_GFX_CMD_MAGIC 1196967473
+#define STASIS_GFX_CMD_VERSION 1
+#define STASIS_GFX_I_FLAGS 2
+#define STASIS_GFX_I_LINE_COUNT 3
+#define STASIS_GFX_I_TEXT_COUNT 7
+#define STASIS_GFX_I_TEXT_BYTES_USED 9
+#define STASIS_GFX_F_CLEAR_BASE 0
+#define STASIS_GFX_F_LINE_BASE 4
+#define STASIS_GFX_I_TEXT_BASE 28704
+#define STASIS_GFX_F_TEXT_BASE 80004
+#define STASIS_GFX_MAX_LINES 10000
+#define STASIS_GFX_MAX_TEXT 2048
+#define STASIS_GFX_MAX_TEXT_BYTES 65536
+
+static int32_t stasis_android_gfx_has_valid_header(void) {
+    return gfx_cmd_i32[0] == STASIS_GFX_CMD_MAGIC && gfx_cmd_i32[1] == STASIS_GFX_CMD_VERSION;
+}
+
+static int32_t stasis_android_clamp_nonnegative(int32_t value, int32_t max_value) {
+    if (value < 0) {
+        return 0;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
 static void stasis_android_commit_dimensions(int32_t width, int32_t height) {
     if (width < 0) { width = 0; }
     if (height < 0) { height = 0; }
@@ -3486,6 +3514,85 @@ STASIS_EXPORT void stasis_on_input(int32_t type, int32_t a, int32_t b) {
             break;
     }
 }
+
+STASIS_EXPORT int32_t stasis_android_frame_flags(void) {
+    if (!stasis_android_gfx_has_valid_header()) {
+        return 0;
+    }
+    return gfx_cmd_i32[STASIS_GFX_I_FLAGS];
+}
+
+STASIS_EXPORT float stasis_android_clear_component(int32_t component_index) {
+    if (!stasis_android_gfx_has_valid_header()) {
+        return 0.0f;
+    }
+    if (component_index < 0 || component_index >= 4) {
+        return 0.0f;
+    }
+    return gfx_cmd_f32[STASIS_GFX_F_CLEAR_BASE + component_index];
+}
+
+STASIS_EXPORT int32_t stasis_android_line_count(void) {
+    if (!stasis_android_gfx_has_valid_header()) {
+        return 0;
+    }
+    return stasis_android_clamp_nonnegative(gfx_cmd_i32[STASIS_GFX_I_LINE_COUNT], STASIS_GFX_MAX_LINES);
+}
+
+STASIS_EXPORT float stasis_android_line_component(int32_t line_index, int32_t component_index) {
+    const int32_t line_count = stasis_android_line_count();
+    if (line_index < 0 || line_index >= line_count) {
+        return 0.0f;
+    }
+    if (component_index < 0 || component_index >= 8) {
+        return 0.0f;
+    }
+    return gfx_cmd_f32[STASIS_GFX_F_LINE_BASE + line_index * 8 + component_index];
+}
+
+STASIS_EXPORT int32_t stasis_android_text_count(void) {
+    if (!stasis_android_gfx_has_valid_header()) {
+        return 0;
+    }
+    return stasis_android_clamp_nonnegative(gfx_cmd_i32[STASIS_GFX_I_TEXT_COUNT], STASIS_GFX_MAX_TEXT);
+}
+
+STASIS_EXPORT int32_t stasis_android_text_meta(int32_t text_index, int32_t component_index) {
+    const int32_t text_count = stasis_android_text_count();
+    if (text_index < 0 || text_index >= text_count) {
+        return 0;
+    }
+    if (component_index < 0 || component_index >= 3) {
+        return 0;
+    }
+    return gfx_cmd_i32[STASIS_GFX_I_TEXT_BASE + text_index * 3 + component_index];
+}
+
+STASIS_EXPORT float stasis_android_text_component(int32_t text_index, int32_t component_index) {
+    const int32_t text_count = stasis_android_text_count();
+    if (text_index < 0 || text_index >= text_count) {
+        return 0.0f;
+    }
+    if (component_index < 0 || component_index >= 6) {
+        return 0.0f;
+    }
+    return gfx_cmd_f32[STASIS_GFX_F_TEXT_BASE + text_index * 6 + component_index];
+}
+
+STASIS_EXPORT int32_t stasis_android_text_byte(int32_t byte_index) {
+    const int32_t text_bytes_used = stasis_android_clamp_nonnegative(
+        gfx_cmd_i32[STASIS_GFX_I_TEXT_BYTES_USED],
+        STASIS_GFX_MAX_TEXT_BYTES
+    );
+    if (byte_index < 0 || byte_index >= text_bytes_used) {
+        return 0;
+    }
+    return (int32_t)gfx_cmd_u8[byte_index];
+}
+
+STASIS_EXPORT int32_t stasis_android_quit_requested(void) {
+    return host_i32[9] != 0 ? 1 : 0;
+}
 "#,
     );
     source.push_str("\nSTASIS_EXPORT void ");
@@ -3507,6 +3614,51 @@ STASIS_EXPORT void stasis_on_input(int32_t type, int32_t a, int32_t b) {
     source.push_str(&jni_prefix);
     source.push_str(
         "nativeOnInput(void* env, void* thiz, int32_t type, int32_t a, int32_t b) {\n    (void)env;\n    (void)thiz;\n    stasis_on_input(type, a, b);\n}\n",
+    );
+    source.push_str("\nSTASIS_EXPORT int32_t ");
+    source.push_str(&jni_prefix);
+    source.push_str(
+        "nativeFrameFlags(void* env, void* thiz) {\n    (void)env;\n    (void)thiz;\n    return stasis_android_frame_flags();\n}\n",
+    );
+    source.push_str("\nSTASIS_EXPORT float ");
+    source.push_str(&jni_prefix);
+    source.push_str(
+        "nativeClearComponent(void* env, void* thiz, int32_t component_index) {\n    (void)env;\n    (void)thiz;\n    return stasis_android_clear_component(component_index);\n}\n",
+    );
+    source.push_str("\nSTASIS_EXPORT int32_t ");
+    source.push_str(&jni_prefix);
+    source.push_str(
+        "nativeLineCount(void* env, void* thiz) {\n    (void)env;\n    (void)thiz;\n    return stasis_android_line_count();\n}\n",
+    );
+    source.push_str("\nSTASIS_EXPORT float ");
+    source.push_str(&jni_prefix);
+    source.push_str(
+        "nativeLineComponent(void* env, void* thiz, int32_t line_index, int32_t component_index) {\n    (void)env;\n    (void)thiz;\n    return stasis_android_line_component(line_index, component_index);\n}\n",
+    );
+    source.push_str("\nSTASIS_EXPORT int32_t ");
+    source.push_str(&jni_prefix);
+    source.push_str(
+        "nativeTextCount(void* env, void* thiz) {\n    (void)env;\n    (void)thiz;\n    return stasis_android_text_count();\n}\n",
+    );
+    source.push_str("\nSTASIS_EXPORT int32_t ");
+    source.push_str(&jni_prefix);
+    source.push_str(
+        "nativeTextMeta(void* env, void* thiz, int32_t text_index, int32_t component_index) {\n    (void)env;\n    (void)thiz;\n    return stasis_android_text_meta(text_index, component_index);\n}\n",
+    );
+    source.push_str("\nSTASIS_EXPORT float ");
+    source.push_str(&jni_prefix);
+    source.push_str(
+        "nativeTextComponent(void* env, void* thiz, int32_t text_index, int32_t component_index) {\n    (void)env;\n    (void)thiz;\n    return stasis_android_text_component(text_index, component_index);\n}\n",
+    );
+    source.push_str("\nSTASIS_EXPORT int32_t ");
+    source.push_str(&jni_prefix);
+    source.push_str(
+        "nativeTextByte(void* env, void* thiz, int32_t byte_index) {\n    (void)env;\n    (void)thiz;\n    return stasis_android_text_byte(byte_index);\n}\n",
+    );
+    source.push_str("\nSTASIS_EXPORT int32_t ");
+    source.push_str(&jni_prefix);
+    source.push_str(
+        "nativeQuitRequested(void* env, void* thiz) {\n    (void)env;\n    (void)thiz;\n    return stasis_android_quit_requested();\n}\n",
     );
     Ok(source)
 }
@@ -3607,7 +3759,7 @@ fn generate_android_game_project(
     })?;
 
     let kotlin = format!(
-        "package {package}\n\nimport android.os.Bundle\nimport android.view.Choreographer\nimport android.view.KeyEvent\nimport android.view.MotionEvent\nimport androidx.appcompat.app.AppCompatActivity\n\nclass MainActivity : AppCompatActivity(), Choreographer.FrameCallback {{\n    private var nativeStarted = false\n    private var lastFrameNanos = 0L\n\n    companion object {{\n        init {{\n            System.loadLibrary(\"stasis_game\")\n        }}\n    }}\n\n    override fun onCreate(savedInstanceState: Bundle?) {{\n        super.onCreate(savedInstanceState)\n    }}\n\n    override fun onWindowFocusChanged(hasFocus: Boolean) {{\n        super.onWindowFocusChanged(hasFocus)\n        if (!hasFocus) {{\n            return\n        }}\n        val decor = window.decorView\n        if (!nativeStarted && decor.width > 0 && decor.height > 0) {{\n            nativeInit(decor.width, decor.height)\n            nativeStarted = true\n        }}\n        if (nativeStarted) {{\n            Choreographer.getInstance().postFrameCallback(this)\n        }}\n    }}\n\n    override fun doFrame(frameTimeNanos: Long) {{\n        if (!nativeStarted) {{\n            return\n        }}\n        val dtSeconds = if (lastFrameNanos == 0L) 1.0f / 60.0f else ((frameTimeNanos - lastFrameNanos).coerceAtLeast(0L).toFloat() / 1_000_000_000.0f)\n        lastFrameNanos = frameTimeNanos\n        nativeTick(dtSeconds)\n        nativeRender()\n        Choreographer.getInstance().postFrameCallback(this)\n    }}\n\n    override fun onTouchEvent(event: MotionEvent): Boolean {{\n        val x = event.x.toInt()\n        val y = event.y.toInt()\n        when (event.actionMasked) {{\n            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> nativeOnInput(1, x, y)\n            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> nativeOnInput(2, x, y)\n            MotionEvent.ACTION_MOVE -> nativeOnInput(3, x, y)\n        }}\n        return true\n    }}\n\n    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {{\n        nativeOnInput(5, keyCode, 0)\n        return super.onKeyDown(keyCode, event)\n    }}\n\n    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {{\n        nativeOnInput(6, keyCode, 0)\n        return super.onKeyUp(keyCode, event)\n    }}\n\n    override fun onBackPressed() {{\n        nativeOnInput(4, 0, 0)\n        super.onBackPressed()\n    }}\n\n    private external fun nativeInit(width: Int, height: Int)\n    private external fun nativeTick(dt: Float)\n    private external fun nativeRender()\n    private external fun nativeOnInput(type: Int, a: Int, b: Int)\n}}\n",
+        "package {package}\n\nimport android.content.Context\nimport android.graphics.Canvas\nimport android.graphics.Color\nimport android.graphics.Paint\nimport android.os.Bundle\nimport android.view.Choreographer\nimport android.view.KeyEvent\nimport android.view.MotionEvent\nimport android.view.View\nimport androidx.appcompat.app.AppCompatActivity\nimport kotlin.math.max\n\nclass MainActivity : AppCompatActivity(), Choreographer.FrameCallback {{\n    private lateinit var gameView: GameView\n    private var nativeStarted = false\n    private var lastFrameNanos = 0L\n\n    companion object {{\n        init {{\n            System.loadLibrary(\"stasis_game\")\n        }}\n    }}\n\n    override fun onCreate(savedInstanceState: Bundle?) {{\n        super.onCreate(savedInstanceState)\n        gameView = GameView(this)\n        setContentView(gameView)\n    }}\n\n    override fun onWindowFocusChanged(hasFocus: Boolean) {{\n        super.onWindowFocusChanged(hasFocus)\n        if (!hasFocus) {{\n            return\n        }}\n        if (!nativeStarted && gameView.width > 0 && gameView.height > 0) {{\n            nativeInit(gameView.width, gameView.height)\n            nativeStarted = true\n        }}\n        if (nativeStarted) {{\n            Choreographer.getInstance().postFrameCallback(this)\n        }}\n    }}\n\n    override fun doFrame(frameTimeNanos: Long) {{\n        if (!nativeStarted) {{\n            return\n        }}\n        val dtSeconds = if (lastFrameNanos == 0L) 1.0f / 60.0f else ((frameTimeNanos - lastFrameNanos).coerceAtLeast(0L).toFloat() / 1_000_000_000.0f)\n        lastFrameNanos = frameTimeNanos\n        nativeTick(dtSeconds)\n        nativeRender()\n        if (nativeQuitRequested() != 0) {{\n            finish()\n            return\n        }}\n        gameView.invalidate()\n        Choreographer.getInstance().postFrameCallback(this)\n    }}\n\n    override fun onTouchEvent(event: MotionEvent): Boolean {{\n        val x = event.x.toInt()\n        val y = event.y.toInt()\n        when (event.actionMasked) {{\n            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> nativeOnInput(1, x, y)\n            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> nativeOnInput(2, x, y)\n            MotionEvent.ACTION_MOVE -> nativeOnInput(3, x, y)\n        }}\n        return true\n    }}\n\n    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {{\n        nativeOnInput(5, keyCode, 0)\n        return super.onKeyDown(keyCode, event)\n    }}\n\n    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {{\n        nativeOnInput(6, keyCode, 0)\n        return super.onKeyUp(keyCode, event)\n    }}\n\n    override fun onBackPressed() {{\n        nativeOnInput(4, 0, 0)\n        super.onBackPressed()\n    }}\n\n    private inner class GameView(context: Context) : View(context) {{\n        private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {{\n            style = Paint.Style.STROKE\n            strokeCap = Paint.Cap.ROUND\n            strokeJoin = Paint.Join.ROUND\n            strokeWidth = max(2.0f, resources.displayMetrics.density)\n        }}\n        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {{\n            style = Paint.Style.FILL\n            textSize = 18.0f * resources.displayMetrics.density * resources.configuration.fontScale\n            color = Color.WHITE\n        }}\n\n        init {{\n            isFocusable = true\n            isFocusableInTouchMode = true\n            requestFocus()\n        }}\n\n        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {{\n            super.onSizeChanged(w, h, oldw, oldh)\n            if (nativeStarted && w > 0 && h > 0) {{\n                nativeOnInput(7, w, h)\n            }}\n        }}\n\n        override fun onDraw(canvas: Canvas) {{\n            super.onDraw(canvas)\n            val flags = nativeFrameFlags()\n            if ((flags and 1) != 0) {{\n                canvas.drawColor(colorFromFloats(\n                    nativeClearComponent(0),\n                    nativeClearComponent(1),\n                    nativeClearComponent(2),\n                    nativeClearComponent(3),\n                ))\n            }} else {{\n                canvas.drawColor(Color.BLACK)\n            }}\n            drawLines(canvas)\n            drawText(canvas)\n        }}\n\n        private fun drawLines(canvas: Canvas) {{\n            val count = nativeLineCount()\n            for (i in 0 until count) {{\n                linePaint.color = colorFromFloats(\n                    nativeLineComponent(i, 4),\n                    nativeLineComponent(i, 5),\n                    nativeLineComponent(i, 6),\n                    nativeLineComponent(i, 7),\n                )\n                canvas.drawLine(\n                    nativeLineComponent(i, 0),\n                    nativeLineComponent(i, 1),\n                    nativeLineComponent(i, 2),\n                    nativeLineComponent(i, 3),\n                    linePaint,\n                )\n            }}\n        }}\n\n        private fun drawText(canvas: Canvas) {{\n            val count = nativeTextCount()\n            val baselineOffset = -textPaint.fontMetrics.ascent\n            for (i in 0 until count) {{\n                val byteOffset = nativeTextMeta(i, 1)\n                val byteLength = nativeTextMeta(i, 2)\n                if (byteOffset < 0 || byteLength <= 0 || byteLength > 2048) {{\n                    continue\n                }}\n                val bytes = ByteArray(byteLength)\n                for (j in 0 until byteLength) {{\n                    bytes[j] = nativeTextByte(byteOffset + j).toByte()\n                }}\n                textPaint.color = colorFromFloats(\n                    nativeTextComponent(i, 2),\n                    nativeTextComponent(i, 3),\n                    nativeTextComponent(i, 4),\n                    nativeTextComponent(i, 5),\n                )\n                canvas.drawText(\n                    bytes.toString(Charsets.UTF_8),\n                    nativeTextComponent(i, 0),\n                    nativeTextComponent(i, 1) + baselineOffset,\n                    textPaint,\n                )\n            }}\n        }}\n\n        private fun colorFromFloats(r: Float, g: Float, b: Float, a: Float): Int {{\n            return Color.argb(channel(a), channel(r), channel(g), channel(b))\n        }}\n\n        private fun channel(value: Float): Int {{\n            val clamped = value.coerceIn(0.0f, 1.0f)\n            return (clamped * 255.0f + 0.5f).toInt()\n        }}\n    }}\n\n    private external fun nativeInit(width: Int, height: Int)\n    private external fun nativeTick(dt: Float)\n    private external fun nativeRender()\n    private external fun nativeOnInput(type: Int, a: Int, b: Int)\n    private external fun nativeFrameFlags(): Int\n    private external fun nativeClearComponent(componentIndex: Int): Float\n    private external fun nativeLineCount(): Int\n    private external fun nativeLineComponent(lineIndex: Int, componentIndex: Int): Float\n    private external fun nativeTextCount(): Int\n    private external fun nativeTextMeta(textIndex: Int, componentIndex: Int): Int\n    private external fun nativeTextComponent(textIndex: Int, componentIndex: Int): Float\n    private external fun nativeTextByte(byteIndex: Int): Int\n    private external fun nativeQuitRequested(): Int\n}}\n",
         package = config.package_id
     );
     std::fs::write(java_dir.join("MainActivity.kt"), kotlin).map_err(|error| {
@@ -8323,10 +8475,26 @@ echo "signed" > "$1.signed"
         )
         .expect("read MainActivity");
         assert!(project_activity.contains("import androidx.appcompat.app.AppCompatActivity"));
-        assert!(project_activity.contains("class MainActivity : AppCompatActivity()"));
+        assert!(project_activity.contains("import android.graphics.Canvas"));
+        assert!(project_activity.contains("class MainActivity : AppCompatActivity(), Choreographer.FrameCallback"));
+        assert!(project_activity.contains("private inner class GameView(context: Context) : View(context)"));
         assert!(project_activity.contains("companion object"));
         assert!(project_activity.contains("System.loadLibrary(\"stasis_game\")"));
         assert!(project_activity.contains("nativeOnInput(1, x, y)"));
+        assert!(project_activity.contains("canvas.drawLine("));
+        assert!(project_activity.contains("nativeFrameFlags()"));
+        assert!(project_activity.contains("nativeTextByte(byteOffset + j)"));
+
+        let bridge_source = fs::read_to_string(
+            temp_root
+                .join("aot_artifacts")
+                .join("android_game_runtime_bridge.c"),
+        )
+        .expect("read android runtime bridge source");
+        assert!(bridge_source.contains("stasis_android_line_count"));
+        assert!(bridge_source.contains("nativeLineComponent"));
+        assert!(bridge_source.contains("nativeTextByte"));
+        assert!(bridge_source.contains("nativeQuitRequested"));
 
         let manifest = fs::read_to_string(
             summary
